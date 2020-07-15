@@ -5,7 +5,6 @@
       "type": "vmware-iso",
       "communicator": "winrm",
       "iso_url": "{{user `iso_url`}}",
-      "iso_checksum_type": "{{user `iso_checksum_type`}}",
       "iso_checksum": "{{user `iso_checksum`}}",
       "headless": false,
       "boot_wait": "2m",
@@ -44,7 +43,6 @@
       "type": "virtualbox-iso",
       "communicator": "winrm",
       "iso_url": "{{user `iso_url`}}",
-      "iso_checksum_type": "{{user `iso_checksum_type`}}",
       "iso_checksum": "{{user `iso_checksum`}}",
       "headless": false,
       "boot_wait": "2m",
@@ -88,7 +86,6 @@
       "vm_name": "windows_10",
       "communicator": "winrm",
       "iso_url": "{{user `iso_url`}}",
-      "iso_checksum_type": "{{user `iso_checksum_type`}}",
       "iso_checksum": "{{user `iso_checksum`}}",
       "headless": false,
       "boot_wait": "6m",
@@ -138,13 +135,13 @@
       "type": "windows-shell",
       "execute_command": "{{ .Vars }} cmd /c \"{{ .Path }}\"",
       "scripts": [
-        "./scripts/vm-guest-tools.bat",
         "./scripts/enable-rdp.bat"
       ]
     },
     {
       "type": "powershell",
       "scripts": [
+        "./scripts/vm-guest-tools.ps1",
         "./scripts/debloat-windows.ps1"
       ]
     },
@@ -173,8 +170,7 @@
   ],
   "variables": {
     "iso_url": "https://software-download.microsoft.com/download/pr/Windows_Server_2016_Datacenter_EVAL_en-us_14393_refresh.ISO",
-    "iso_checksum_type": "md5",
-    "iso_checksum": "70721288BBCDFE3239D8F8C0FAE55F1F",
+    "iso_checksum": "md5:70721288BBCDFE3239D8F8C0FAE55F1F",
     "disk_size": "61440",
     "autounattend": "./answer_files/2016/Autounattend.xml",
     "virtio_win_iso": "./virtio-win.iso",

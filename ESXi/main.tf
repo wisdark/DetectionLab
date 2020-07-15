@@ -30,9 +30,8 @@ resource "esxi_guest" "logger" {
 
     provisioner "remote-exec" {
     inline = [
-      "sudo ifconfig up eth1 | echo 'eth1 up'",
+      "sudo ifconfig up eth1 || echo 'eth1 up'",
       "sudo ifconfig up eth2 || echo 'eth2 up'",
-      "sudo dhclient -v eth1 || echo 'eth1 dhcp'",
       "sudo route add default gw 192.168.76.1 || echo 'route exists'"
     ]
 
@@ -73,7 +72,7 @@ resource "esxi_guest" "dc" {
   boot_disk_type = "thin"
   boot_disk_size = "35"
 
-  memsize            = "2048"
+  memsize            = "4096"
   numvcpus           = "2"
   resource_pool_name = "/"
   power              = "on"
