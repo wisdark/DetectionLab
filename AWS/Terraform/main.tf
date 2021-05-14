@@ -193,6 +193,7 @@ resource "aws_instance" "logger" {
       "sudo sed -i 's/eth1/ens5/g' /opt/DetectionLab/Vagrant/logger_bootstrap.sh",
       "sudo sed -i 's/ETH1/ens5/g' /opt/DetectionLab/Vagrant/logger_bootstrap.sh",
       "sudo sed -i 's/eth1/ens5/g' /opt/DetectionLab/Vagrant/resources/suricata/suricata.yaml",
+      "sudo sed -i -e '127,130d' /opt/DetectionLab/Vagrant/resources/suricata/suricata.yaml",
       "sudo sed -i 's#/vagrant/resources#/opt/DetectionLab/Vagrant/resources#g' /opt/DetectionLab/Vagrant/logger_bootstrap.sh",
       "sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/g' /etc/ssh/sshd_config",
       "sudo service ssh restart",
@@ -283,6 +284,43 @@ resource "aws_instance" "wef" {
     delete_on_termination = true
   }
 }
+
+# Uncomment when the AMI has been created
+# resource "aws_instance" "exchange" {
+#   instance_type = "t3.medium"
+#   count = var.create_exchange_server ? 1 : 0
+
+#   provisioner "remote-exec" {
+#     inline = [
+#       "choco install -force -y winpcap",
+#       "powershell.exe -c \"Add-Content 'c:\\windows\\system32\\drivers\\etc\\hosts' '        192.168.38.102    dc.windomain.local'\"",
+#       "powershell.exe -c \"Add-Content 'c:\\windows\\system32\\drivers\\etc\\hosts' '        192.168.38.102    windomain.local'\"",
+#       "ipconfig /renew",
+#     ]
+
+#     connection {
+#       type     = "winrm"
+#       user     = "vagrant"
+#       password = "vagrant"
+#       host     = coalesce(self.public_ip, self.private_ip)
+#     }
+#   }
+
+#   # Uses the local variable if external data source resolution fails
+#   ami = coalesce(var.exchange_ami, data.aws_ami.exchange_ami.image_id)
+
+#   tags = merge(var.custom-tags, map(
+#     "Name", "${var.instance_name_prefix}exchange.windomain.local"
+#   ))
+
+#   subnet_id              = aws_subnet.default.id
+#   vpc_security_group_ids = [aws_security_group.windows.id]
+#   private_ip             = "192.168.38.106"
+
+#   root_block_device {
+#     delete_on_termination = true
+#   }
+# }
 
 resource "aws_instance" "win10" {
   instance_type = "t2.medium"

@@ -160,6 +160,7 @@ install_splunk() {
     /opt/splunk/bin/splunk add index suricata -auth 'admin:changeme'
     /opt/splunk/bin/splunk add index threathunting -auth 'admin:changeme'
     /opt/splunk/bin/splunk add index evtx_attack_samples -auth 'admin:changeme'
+    /opt/splunk/bin/splunk add index msexchange -auth 'admin:changeme'
     /opt/splunk/bin/splunk install app /vagrant/resources/splunk_forwarder/splunk-add-on-for-microsoft-windows_700.tgz -auth 'admin:changeme'
     /opt/splunk/bin/splunk install app /vagrant/resources/splunk_server/splunk-add-on-for-microsoft-sysmon_1062.tgz -auth 'admin:changeme'
     /opt/splunk/bin/splunk install app /vagrant/resources/splunk_server/asn-lookup-generator_110.tgz -auth 'admin:changeme'
@@ -169,7 +170,7 @@ install_splunk() {
     /opt/splunk/bin/splunk install app /vagrant/resources/splunk_server/punchcard-custom-visualization_130.tgz -auth 'admin:changeme'
     /opt/splunk/bin/splunk install app /vagrant/resources/splunk_server/sankey-diagram-custom-visualization_130.tgz -auth 'admin:changeme'
     /opt/splunk/bin/splunk install app /vagrant/resources/splunk_server/link-analysis-app-for-splunk_161.tgz -auth 'admin:changeme'
-    /opt/splunk/bin/splunk install app /vagrant/resources/splunk_server/threathunting_144.tgz -auth 'admin:changeme'
+    /opt/splunk/bin/splunk install app /vagrant/resources/splunk_server/threathunting_1492.tgz -auth 'admin:changeme'
     
     # Fix ASNGen App - https://github.com/doksu/TA-asngen/issues/18#issuecomment-685691630
     echo 'python.version = python2' >> /opt/splunk/etc/apps/TA-asngen/default/commands.conf
@@ -194,6 +195,10 @@ install_splunk() {
     # but for some reason adding them to "local" wasnt working
     cp /vagrant/resources/splunk_server/windows_ta_props.conf /opt/splunk/etc/apps/Splunk_TA_windows/default/props.conf
     cp /vagrant/resources/splunk_server/sysmon_ta_props.conf /opt/splunk/etc/apps/TA-microsoft-sysmon/default/props.conf
+
+    # Add props.conf to Splunk Zeek TA to properly parse timestamp
+    # and avoid grouping events as a single event
+    cp /vagrant/resources/splunk_server/zeek_ta_props.conf /opt/splunk/etc/apps/Splunk_TA_bro/local/props.conf
 
     # Add custom Macro definitions for ThreatHunting App
     cp /vagrant/resources/splunk_server/macros.conf /opt/splunk/etc/apps/ThreatHunting/default/macros.conf
@@ -267,7 +272,7 @@ install_fleet_import_osquery_config() {
     mysql -uroot -pkolide -e "create database kolide;"
 
     # Always download the latest release of Fleet
-    curl -s https://api.github.com/repos/fleetdm/fleet/releases/latest | grep 'https://github.com' | grep "/fleet.zip" | cut -d ':' -f 2,3 | tr -d '"' | wget --progress=bar:force -i -
+    curl -s https://api.github.com/repos/fleetdm/fleet/releases | grep 'https://github.com' | grep "/fleet.zip" | cut -d ':' -f 2,3 | tr -d '"' | tr -d ' '  | head -1 | wget --progress=bar:force -i -
     unzip fleet.zip -d fleet
     cp fleet/linux/fleetctl /usr/local/bin/fleetctl && chmod +x /usr/local/bin/fleetctl
     cp fleet/linux/fleet /usr/local/bin/fleet && chmod +x /usr/local/bin/fleet
@@ -377,6 +382,17 @@ install_zeek() {
   crudini --set $NODECFG proxy host localhost
 
   # Setup $CPUS numbers of Zeek workers
+  # AWS only has a single interface (eth1), so don't monitor eth0 if we're in AWS
+  if ! curl -s 169.254.169.254 --connect-timeout 2 >/dev/null; then 
+  # TL;DR of ^^^: if you can't reach the AWS metadata service, you're not running in AWS
+  # Therefore, it's ok to add this.
+    crudini --set $NODECFG worker-eth0 type worker
+    crudini --set $NODECFG worker-eth0 host localhost
+    crudini --set $NODECFG worker-eth0 interface eth0
+    crudini --set $NODECFG worker-eth0 lb_method pf_ring
+    crudini --set $NODECFG worker-eth0 lb_procs "$(nproc)"
+  fi
+  
   crudini --set $NODECFG worker-eth1 type worker
   crudini --set $NODECFG worker-eth1 host localhost
   crudini --set $NODECFG worker-eth1 interface eth1
@@ -391,7 +407,7 @@ install_zeek() {
   # Configure the Splunk inputs
   mkdir -p /opt/splunk/etc/apps/Splunk_TA_bro/local && touch /opt/splunk/etc/apps/Splunk_TA_bro/local/inputs.conf
   crudini --set /opt/splunk/etc/apps/Splunk_TA_bro/local/inputs.conf monitor:///opt/zeek/spool/manager index zeek
-  crudini --set /opt/splunk/etc/apps/Splunk_TA_bro/local/inputs.conf monitor:///opt/zeek/spool/manager sourcetype bro:json
+  crudini --set /opt/splunk/etc/apps/Splunk_TA_bro/local/inputs.conf monitor:///opt/zeek/spool/manager sourcetype zeek:json
   crudini --set /opt/splunk/etc/apps/Splunk_TA_bro/local/inputs.conf monitor:///opt/zeek/spool/manager whitelist '.*\.log$'
   crudini --set /opt/splunk/etc/apps/Splunk_TA_bro/local/inputs.conf monitor:///opt/zeek/spool/manager blacklist '.*(communication|stderr)\.log$'
   crudini --set /opt/splunk/etc/apps/Splunk_TA_bro/local/inputs.conf monitor:///opt/zeek/spool/manager disabled 0
@@ -464,12 +480,11 @@ install_suricata() {
   suricata-update enable-source ptresearch/attackdetection
 
   # Configure the Splunk inputs
-  mkdir -p /opt/splunk/etc/apps/SplunkLightForwarder/local && touch /opt/splunk/etc/apps/SplunkLightForwarder/local/inputs.conf
-  crudini --set /opt/splunk/etc/apps/SplunkLightForwarder/local/inputs.conf monitor:///var/log/suricata index suricata
-  crudini --set /opt/splunk/etc/apps/SplunkLightForwarder/local/inputs.conf monitor:///var/log/suricata sourcetype suricata:json
-  crudini --set /opt/splunk/etc/apps/SplunkLightForwarder/local/inputs.conf monitor:///var/log/suricata whitelist 'eve.json'
-  crudini --set /opt/splunk/etc/apps/SplunkLightForwarder/local/inputs.conf monitor:///var/log/suricata disabled 0
-  crudini --set /opt/splunk/etc/apps/SplunkLightForwarder/local/props.conf json_suricata TRUNCATE 0
+  crudini --set /opt/splunk/etc/apps/search/local/inputs.conf monitor:///var/log/suricata index suricata
+  crudini --set /opt/splunk/etc/apps/search/local/inputs.conf monitor:///var/log/suricata sourcetype suricata:json
+  crudini --set /opt/splunk/etc/apps/search/local/inputs.conf monitor:///var/log/suricata whitelist 'eve.json'
+  crudini --set /opt/splunk/etc/apps/search/local/inputs.conf monitor:///var/log/suricata disabled 0
+  crudini --set /opt/splunk/etc/apps/search/local/props.conf suricata:json TRUNCATE 0
 
   # Update suricata and restart
   suricata-update

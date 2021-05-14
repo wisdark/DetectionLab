@@ -79,8 +79,8 @@ ufw --force enable
 echo "[$(date +%H:%M:%S)]: Installing Vagrant..."
 mkdir /opt/vagrant
 cd /opt/vagrant || exit 1
-wget --progress=bar:force https://releases.hashicorp.com/vagrant/2.2.10/vagrant_2.2.10_x86_64.deb
-dpkg -i vagrant_2.2.10_x86_64.deb
+wget --progress=bar:force https://releases.hashicorp.com/vagrant/2.2.14/vagrant_2.2.14_x86_64.deb
+dpkg -i vagrant_2.2.14_x86_64.deb
 echo "[$(date +%H:%M:%S)]: Installing vagrant-reload plugin..."
 vagrant plugin install vagrant-reload
 
@@ -97,10 +97,6 @@ sysctl -p /etc/sysctl.conf > /dev/null
 # Make the Vagrant instances headless
 cd /opt/DetectionLab/Vagrant || exit 1
 sed -i 's/vb.gui = true/vb.gui = false/g' Vagrantfile
-
-# Temporary workaround for VB 6.1 until this is fixed in Vagrant
-# https://github.com/clong/DetectionLab/issues/374
-sed -i 's/--clipboard/--clipboard-mode/g' /opt/DetectionLab/Vagrant/Vagrantfile
 
 # If the boxes are present on external storage, we can modify the Vagrantfile to
 # point to the boxes on disk so we don't have to download them

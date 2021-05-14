@@ -1,4 +1,5 @@
 #Requires -Version 4.0
+#Requires -RunAsAdministrator
 
 <#
 .Synopsis
@@ -252,6 +253,15 @@ function preflight_checks {
   }
   else {
     Write-Host '  ['$($checkmark)'] The vagrant-reload plugin is installed' -ForegroundColor green
+  }
+
+  # Warn if Virtual Machine Platform is enabled
+  Write-Host ''
+  Write-Host '[+] Checking if Virtual Machine Platform is enabled...'
+  if ((Get-WindowsOptionalFeature -Online -FeatureName "VirtualMachinePlatform").State -eq "Enabled") {
+    Write-Host '  [-] The "Virtual Machine Platform" Windows feature is enabled on your computer and is known to cause issues with certain versions of Virtualbox.' -ForegroundColor yellow
+    Write-Host '  [-] If you experience issues with Virtualbox, it is recommended to disable it by running "optionalfeatures" from the Windows run prompt and unchecking "Virtual Machine Platform".' -ForegroundColor yellow
+    Write-Host '  [-] More information can be found at https://superuser.com/a/1619173' -ForegroundColor yellow
   }
 }
 
