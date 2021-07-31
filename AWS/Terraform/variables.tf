@@ -59,11 +59,11 @@ variable "external_dns_servers" {
 
 # Use Data Sources to resolve the AMI-ID for the Ubuntu 18.04 AMI
 data "aws_ami" "logger_ami" {
-  owners = ["099720109477"]
+  owners = ["505638924199"]
 
   filter {
     name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-bionic-18.04-amd64-server-20191113"]
+    values = ["detectionlab-logger"]
   }
 }
 
@@ -87,18 +87,6 @@ data "aws_ami" "wef_ami" {
     values = ["detectionlab-wef"]
   }
 }
-
-# Uncomment after this AMI has been created and uploaded to AWS
-# # Use Data Sources to resolve the AMI-ID for the pre-built EXCHANGE host
-# data "aws_ami" "exchange_ami" {
-#   owners      = ["505638924199"]
-#   most_recent = true
-
-#   filter {
-#     name   = "name"
-#     values = ["detectionlab-exchange"]
-#   }
-# }
 
 # Use Data Sources to resolve the AMI-ID for the pre-built Win10 host
 data "aws_ami" "win10_ami" {
@@ -136,11 +124,4 @@ variable "exchange_ami" {
 variable "win10_ami" {
   type    = string
   default = ""
-}
-
-# Set to "true" in terraform.tfvars if you want to add the Exchange server
-variable "create_exchange_server" {
-  description = "If set to true, adds an additional host that installs exchange"
-  type        = bool
-  default     = false
 }

@@ -7,7 +7,10 @@ if ! curl -s 169.254.169.254 --connect-timeout 2 >/dev/null; then
   echo -e "    eth1:\n      dhcp4: true\n      nameservers:\n        addresses: [8.8.8.8,8.8.4.4]" >>/etc/netplan/01-netcfg.yaml
   netplan apply
 fi
-sed -i 's/nameserver 127.0.0.53/nameserver 8.8.8.8/g' /etc/resolv.conf && chattr +i /etc/resolv.conf
+
+if grep '127.0.0.53' /etc/resolv.conf; then
+  sed -i 's/nameserver 127.0.0.53/nameserver 8.8.8.8/g' /etc/resolv.conf && chattr +i /etc/resolv.conf
+fi
 
 # Source variables from logger_variables.sh
 # shellcheck disable=SC1091
@@ -24,7 +27,9 @@ export DEBIAN_FRONTEND=noninteractive
 echo "apt-fast apt-fast/maxdownloads string 10" | debconf-set-selections
 echo "apt-fast apt-fast/dlflag boolean true" | debconf-set-selections
 
-sed -i "2ideb mirror://mirrors.ubuntu.com/mirrors.txt bionic main restricted universe multiverse\ndeb mirror://mirrors.ubuntu.com/mirrors.txt bionic-updates main restricted universe multiverse\ndeb mirror://mirrors.ubuntu.com/mirrors.txt bionic-backports main restricted universe multiverse\ndeb mirror://mirrors.ubuntu.com/mirrors.txt bionic-security main restricted universe multiverse" /etc/apt/sources.list
+if ! grep 'mirrors.ubuntu.com/mirrors.txt' /etc/apt/sources.list; then
+  sed -i "2ideb mirror://mirrors.ubuntu.com/mirrors.txt bionic main restricted universe multiverse\ndeb mirror://mirrors.ubuntu.com/mirrors.txt bionic-updates main restricted universe multiverse\ndeb mirror://mirrors.ubuntu.com/mirrors.txt bionic-backports main restricted universe multiverse\ndeb mirror://mirrors.ubuntu.com/mirrors.txt bionic-security main restricted universe multiverse" /etc/apt/sources.list
+fi
 
 apt_install_prerequisites() {
   echo "[$(date +%H:%M:%S)]: Adding apt repositories..."
@@ -89,11 +94,14 @@ fix_eth1_static_ip() {
   fi
   # There's a fun issue where dhclient keeps messing with eth1 despite the fact
   # that eth1 has a static IP set. We workaround this by setting a static DHCP lease.
-  echo -e 'interface "eth1" {
-    send host-name = gethostname();
-    send dhcp-requested-address 192.168.38.105;
-  }' >>/etc/dhcp/dhclient.conf
-  netplan apply
+  if ! grep 'interface "eth1"' /etc/dhcp/dhclient.conf; then
+    echo -e 'interface "eth1" {
+      send host-name = gethostname();
+      send dhcp-requested-address 192.168.38.105;
+    }' >>/etc/dhcp/dhclient.conf
+    netplan apply
+  fi
+
   # Fix eth1 if the IP isn't set correctly
   ETH1_IP=$(ip -4 addr show eth1 | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
   if [ "$ETH1_IP" != "192.168.38.105" ]; then
@@ -202,8 +210,13 @@ install_splunk() {
 
     # Add custom Macro definitions for ThreatHunting App
     cp /vagrant/resources/splunk_server/macros.conf /opt/splunk/etc/apps/ThreatHunting/default/macros.conf
-    # Fix props.conf in ThreatHunting App
-    sed -i 's/EVAL-host_fqdn = Computer/EVAL-host_fqdn = ComputerName/g' /opt/splunk/etc/apps/ThreatHunting/default/props.conf
+    # Fix some misc stuff
+    sed -i 's/index=windows/`windows`/g' /opt/splunk/etc/apps/ThreatHunting/default/data/ui/views/computer_investigator.xml
+    sed -i 's/$host$)/$host$*)/g' /opt/splunk/etc/apps/ThreatHunting/default/data/ui/views/computer_investigator.xml
+    # This is probably horrible and may break some stuff, but I'm hoping it fixes more than it breaks
+    find /opt/splunk/etc/apps/ThreatHunting -type f ! -path "/opt/splunk/etc/apps/ThreatHunting/default/props.conf" -exec sed -i -e 's/host_fqdn/ComputerName/g' {} \;
+    find /opt/splunk/etc/apps/ThreatHunting -type f ! -path "/opt/splunk/etc/apps/ThreatHunting/default/props.conf" -exec sed -i -e 's/event_id/EventCode/g' {} \;
+
     # Fix Windows TA macros
     mkdir /opt/splunk/etc/apps/Splunk_TA_windows/local
     cp /opt/splunk/etc/apps/Splunk_TA_windows/default/macros.conf /opt/splunk/etc/apps/Splunk_TA_windows/local
@@ -264,12 +277,16 @@ install_fleet_import_osquery_config() {
     cd /opt || exit 1
 
     echo "[$(date +%H:%M:%S)]: Installing Fleet..."
-    echo -e "\n127.0.0.1       fleet" >>/etc/hosts
-    echo -e "\n127.0.0.1       logger" >>/etc/hosts
+    if ! grep 'fleet' /etc/hosts; then
+      echo -e "\n127.0.0.1       fleet" >>/etc/hosts
+    fi
+    if ! grep 'logger' /etc/hosts; then
+      echo -e "\n127.0.0.1       logger" >>/etc/hosts
+    fi
 
-    # Set MySQL username and password, create kolide database
-    mysql -uroot -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'kolide';"
-    mysql -uroot -pkolide -e "create database kolide;"
+    # Set MySQL username and password, create fleet database
+    mysql -uroot -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'fleet';"
+    mysql -uroot -pfleet -e "create database fleet;"
 
     # Always download the latest release of Fleet
     curl -s https://api.github.com/repos/fleetdm/fleet/releases | grep 'https://github.com' | grep "/fleet.zip" | cut -d ':' -f 2,3 | tr -d '"' | tr -d ' '  | head -1 | wget --progress=bar:force -i -
@@ -278,17 +295,20 @@ install_fleet_import_osquery_config() {
     cp fleet/linux/fleet /usr/local/bin/fleet && chmod +x /usr/local/bin/fleet
 
     # Prepare the DB
-    fleet prepare db --mysql_address=127.0.0.1:3306 --mysql_database=kolide --mysql_username=root --mysql_password=kolide
+    fleet prepare db --mysql_address=127.0.0.1:3306 --mysql_database=fleet --mysql_username=root --mysql_password=fleet
 
     # Copy over the certs and service file
     cp /vagrant/resources/fleet/server.* /opt/fleet/
     cp /vagrant/resources/fleet/fleet.service /etc/systemd/system/fleet.service
 
+    # Create directory for logs
     mkdir /var/log/fleet
 
+    # Install the service file
     /bin/systemctl enable fleet.service
     /bin/systemctl start fleet.service
 
+    # Start Fleet
     echo "[$(date +%H:%M:%S)]: Waiting for fleet service to start..."
     while true; do
       result=$(curl --silent -k https://127.0.0.1:8412)
@@ -302,7 +322,7 @@ install_fleet_import_osquery_config() {
     fleetctl login --email admin@detectionlab.network --password 'admin123#'
 
     # Set the enrollment secret to match what we deploy to Windows hosts
-    mysql -uroot --password=kolide -e 'use kolide; update enroll_secrets set secret = "enrollmentsecret" where active=1;'
+    mysql -uroot --password=fleet -e 'use fleet; update enroll_secrets set secret = "enrollmentsecret";'
     echo "Updated enrollment secret"
 
     # Change the query invervals to reflect a lab environment
@@ -340,7 +360,9 @@ install_zeek() {
   echo "[$(date +%H:%M:%S)]: Installing Zeek..."
   # Environment variables
   NODECFG=/opt/zeek/etc/node.cfg
-  sh -c "echo 'deb http://download.opensuse.org/repositories/security:/zeek/xUbuntu_18.04/ /' > /etc/apt/sources.list.d/security:zeek.list"
+  if ! grep 'zeek' /etc/apt/sources.list.d/security:zeek.list; then
+    sh -c "echo 'deb http://download.opensuse.org/repositories/security:/zeek/xUbuntu_18.04/ /' > /etc/apt/sources.list.d/security:zeek.list"
+  fi
   wget -nv https://download.opensuse.org/repositories/security:zeek/xUbuntu_18.04/Release.key -O /tmp/Release.key
   apt-key add - </tmp/Release.key &>/dev/null
   # Update APT repositories
@@ -372,6 +394,9 @@ install_zeek() {
   redef Intel::read_files += {
     "/opt/zeek/etc/intel.dat"
   };
+  
+  redef ignore_checksums = T;
+  
   ' >>/opt/zeek/share/zeek/site/local.zeek
 
   # Configure Zeek
@@ -498,6 +523,7 @@ install_suricata() {
     exit 1
   fi
 
+  # Configure a logrotate policy for Suricata
   cat >/etc/logrotate.d/suricata <<EOF
 /var/log/suricata/*.log /var/log/suricata/*.json
 {
@@ -565,6 +591,31 @@ postinstall_tasks() {
   curl -s -A "DetectionLab-logger" "https:/ping.detectionlab.network/logger" || echo "Unable to connect to ping.detectionlab.network"
 }
 
+configure_splunk_inputs() {
+  # Suricata
+  crudini --set /opt/splunk/etc/apps/search/local/inputs.conf monitor:///var/log/suricata index suricata
+  crudini --set /opt/splunk/etc/apps/search/local/inputs.conf monitor:///var/log/suricata sourcetype suricata:json
+  crudini --set /opt/splunk/etc/apps/search/local/inputs.conf monitor:///var/log/suricata whitelist 'eve.json'
+  crudini --set /opt/splunk/etc/apps/search/local/inputs.conf monitor:///var/log/suricata disabled 0
+  crudini --set /opt/splunk/etc/apps/search/local/props.conf suricata:json TRUNCATE 0
+
+  # Fleet
+    /opt/splunk/bin/splunk add monitor "/var/log/fleet/osquery_result" -index osquery -sourcetype 'osquery:json' -auth 'admin:changeme' --accept-license --answer-yes --no-prompt
+    /opt/splunk/bin/splunk add monitor "/var/log/fleet/osquery_status" -index osquery-status -sourcetype 'osquery:status' -auth 'admin:changeme' --accept-license --answer-yes --no-prompt
+
+  # Zeek
+  mkdir -p /opt/splunk/etc/apps/Splunk_TA_bro/local && touch /opt/splunk/etc/apps/Splunk_TA_bro/local/inputs.conf
+  crudini --set /opt/splunk/etc/apps/Splunk_TA_bro/local/inputs.conf monitor:///opt/zeek/spool/manager index zeek
+  crudini --set /opt/splunk/etc/apps/Splunk_TA_bro/local/inputs.conf monitor:///opt/zeek/spool/manager sourcetype zeek:json
+  crudini --set /opt/splunk/etc/apps/Splunk_TA_bro/local/inputs.conf monitor:///opt/zeek/spool/manager whitelist '.*\.log$'
+  crudini --set /opt/splunk/etc/apps/Splunk_TA_bro/local/inputs.conf monitor:///opt/zeek/spool/manager blacklist '.*(communication|stderr)\.log$'
+  crudini --set /opt/splunk/etc/apps/Splunk_TA_bro/local/inputs.conf monitor:///opt/zeek/spool/manager disabled 0
+
+  # Ensure permissions are correct and restart splunk
+  chown -R splunk:splunk /opt/splunk/etc/apps/Splunk_TA_bro
+  /opt/splunk/bin/splunk restart
+}
+
 main() {
   apt_install_prerequisites
   modify_motd
@@ -580,5 +631,15 @@ main() {
   postinstall_tasks
 }
 
-main
+splunk_only() {
+  install_splunk
+  configure_splunk_inputs
+}
+
+# Allow custom modes via CLI args
+if [ -n "$1" ]; then
+  eval "$1"
+else
+  main
+fi
 exit 0
