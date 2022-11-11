@@ -1,4 +1,5 @@
 #! /usr/bin/env bash
+# shellcheck disable=SC1091,SC2129
 
 # This is the script that is used to provision the logger host
 
@@ -8,9 +9,13 @@ if ! curl -s 169.254.169.254 --connect-timeout 2 >/dev/null; then
   netplan apply
 fi
 
-if grep '127.0.0.53' /etc/resolv.conf; then
-  sed -i 's/nameserver 127.0.0.53/nameserver 8.8.8.8/g' /etc/resolv.conf && chattr +i /etc/resolv.conf
-fi
+# Kill systemd-resolvd, just use plain ol' /etc/resolv.conf
+systemctl disable systemd-resolved
+systemctl stop systemd-resolved
+rm /etc/resolv.conf
+echo 'nameserver 8.8.8.8' >> /etc/resolv.conf
+echo 'nameserver 8.8.4.4' >> /etc/resolv.conf
+echo 'nameserver 192.168.56.102' >> /etc/resolv.conf
 
 # Source variables from logger_variables.sh
 # shellcheck disable=SC1091
@@ -26,10 +31,6 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 echo "apt-fast apt-fast/maxdownloads string 10" | debconf-set-selections
 echo "apt-fast apt-fast/dlflag boolean true" | debconf-set-selections
-
-if ! grep 'mirrors.ubuntu.com/mirrors.txt' /etc/apt/sources.list; then
-  sed -i "2ideb mirror://mirrors.ubuntu.com/mirrors.txt focal main restricted universe multiverse\ndeb mirror://mirrors.ubuntu.com/mirrors.txt focal-updates main restricted universe multiverse\ndeb mirror://mirrors.ubuntu.com/mirrors.txt focal-backports main restricted universe multiverse\ndeb mirror://mirrors.ubuntu.com/mirrors.txt focal-security main restricted universe multiverse" /etc/apt/sources.list
-fi
 
 apt_install_prerequisites() {
   echo "[$(date +%H:%M:%S)]: Adding apt repositories..."
@@ -47,7 +48,7 @@ apt_install_prerequisites() {
   echo "[$(date +%H:%M:%S)]: Installing apt-fast..."
   apt-get -qq install -y apt-fast
   echo "[$(date +%H:%M:%S)]: Using apt-fast to install packages..."
-  apt-fast install -y jq whois build-essential git unzip htop yq mysql-server redis-server python3-pip libcairo2-dev libjpeg-turbo8-dev libpng-dev libtool-bin libossp-uuid-dev libavcodec-dev libavutil-dev libswscale-dev freerdp2-dev libpango1.0-dev libssh2-1-dev libvncserver-dev libtelnet-dev libssl-dev libvorbis-dev libwebp-dev tomcat9 tomcat9-admin tomcat9-user tomcat9-common
+  apt-fast install -y jq whois build-essential git unzip htop yq mysql-server redis-server python3-pip libcairo2-dev libjpeg-turbo8-dev libpng-dev libtool-bin libossp-uuid-dev libavcodec-dev libavutil-dev libswscale-dev freerdp2-dev libpango1.0-dev libssh2-1-dev libvncserver-dev libtelnet-dev libssl-dev libvorbis-dev libwebp-dev tomcat9 tomcat9-admin tomcat9-user tomcat9-common net-tools
 }
 
 modify_motd() {
@@ -115,6 +116,7 @@ fix_eth1_static_ip() {
       echo "[$(date +%H:%M:%S)]: The static IP has been fixed and set to 192.168.56.105"
     else
       echo "[$(date +%H:%M:%S)]: Failed to fix the broken static IP for eth1. Exiting because this will cause problems with other VMs."
+      echo "[$(date +%H:%M:%S)]: eth1's current IP address is $ETH1_IP"
       exit 1
     fi
   fi
@@ -261,6 +263,9 @@ display.page.home.dashboardId = /servicesNS/nobody/search/data/ui/views/logger_d
     /opt/splunk/bin/splunk restart
     /opt/splunk/bin/splunk enable boot-start
   fi
+  # Include Splunk and Zeek in the PATH
+  echo export PATH="$PATH:/opt/splunk/bin:/opt/zeek/bin" >>~/.bashrc
+  echo "export SPLUNK_HOME=/opt/splunk" >>~/.bashrc
 }
 
 download_palantir_osquery_config() {
@@ -274,10 +279,10 @@ download_palantir_osquery_config() {
 }
 
 install_fleet_import_osquery_config() {
-  if [ -f "/opt/fleet" ]; then
+  if [ -d "/opt/fleet" ]; then
     echo "[$(date +%H:%M:%S)]: Fleet is already installed"
   else
-    cd /opt || exit 1
+    cd /opt && mkdir /opt/fleet || exit 1
 
     echo "[$(date +%H:%M:%S)]: Installing Fleet..."
     if ! grep 'fleet' /etc/hosts; then
@@ -291,11 +296,13 @@ install_fleet_import_osquery_config() {
     mysql -uroot -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'fleet';"
     mysql -uroot -pfleet -e "create database fleet;"
 
-    # Always download the latest release of Fleet
-    curl -s https://api.github.com/repos/fleetdm/fleet/releases | grep 'https://github.com' | grep "/fleet.zip" | cut -d ':' -f 2,3 | tr -d '"' | tr -d ' ' | head -1 | wget --progress=bar:force -i -
-    unzip fleet.zip -d fleet
-    cp fleet/linux/fleetctl /usr/local/bin/fleetctl && chmod +x /usr/local/bin/fleetctl
-    cp fleet/linux/fleet /usr/local/bin/fleet && chmod +x /usr/local/bin/fleet
+    # Always download the latest release of Fleet and Fleetctl
+    curl -s https://api.github.com/repos/fleetdm/fleet/releases/latest | jq '.assets[] | select(.name|match("linux.tar.gz$")) | .browser_download_url' | sed 's/"//g' | grep fleetctl  | wget --progress=bar:force -i -
+    curl -s https://api.github.com/repos/fleetdm/fleet/releases/latest | jq '.assets[] | select(.name|match("linux.tar.gz$")) | .browser_download_url' | sed 's/"//g' | grep fleet | grep -v fleetctl | wget --progress=bar:force -i -
+    tar -xvf fleet_*.tar.gz
+    tar -xvf fleetctl_*.tar.gz
+    cp fleetctl_*/fleetctl /usr/local/bin/fleetctl && chmod +x /usr/local/bin/fleetctl
+    cp fleet_*/fleet /usr/local/bin/fleet && chmod +x /usr/local/bin/fleet
 
     # Prepare the DB
     fleet prepare db --mysql_address=127.0.0.1:3306 --mysql_database=fleet --mysql_username=root --mysql_password=fleet
@@ -321,27 +328,32 @@ install_fleet_import_osquery_config() {
 
     fleetctl config set --address https://192.168.56.105:8412
     fleetctl config set --tls-skip-verify true
-    fleetctl setup --email admin@detectionlab.network --username admin --password 'admin123#' --org-name DetectionLab
-    fleetctl login --email admin@detectionlab.network --password 'admin123#'
+    fleetctl setup --email admin@detectionlab.network --name admin --password 'Fl33tpassword!' --org-name DetectionLab
+    fleetctl login --email admin@detectionlab.network --password 'Fl33tpassword!'
 
     # Set the enrollment secret to match what we deploy to Windows hosts
-    mysql -uroot --password=fleet -e 'use fleet; update enroll_secrets set secret = "enrollmentsecret";'
-    echo "Updated enrollment secret"
+    if mysql -uroot --password=fleet -e 'use fleet; INSERT INTO enroll_secrets(created_at, secret, team_id) VALUES ("2022-05-30 21:20:23", "enrollmentsecretenrollmentsecret", NULL);'; then
+      echo "Updated enrollment secret"
+    else
+      echo "Error adding the custom enrollment secret. This is going to cause problems with agent enrollment."
+    fi
 
     # Change the query invervals to reflect a lab environment
     # Every hour -> Every 3 minutes
     # Every 24 hours -> Every 15 minutes
-    sed -i 's/interval: 3600/interval: 180/g' osquery-configuration/Fleet/Endpoints/MacOS/osquery.yaml
-    sed -i 's/interval: 3600/interval: 180/g' osquery-configuration/Fleet/Endpoints/Windows/osquery.yaml
-    sed -i 's/interval: 28800/interval: 900/g' osquery-configuration/Fleet/Endpoints/MacOS/osquery.yaml
-    sed -i 's/interval: 28800/interval: 900/g' osquery-configuration/Fleet/Endpoints/Windows/osquery.yaml
+    sed -i 's/interval: 3600/interval: 300/g' osquery-configuration/Fleet/Endpoints/MacOS/osquery.yaml
+    sed -i 's/interval: 3600/interval: 300/g' osquery-configuration/Fleet/Endpoints/Windows/osquery.yaml
+    sed -i 's/interval: 28800/interval: 1800/g' osquery-configuration/Fleet/Endpoints/MacOS/osquery.yaml
+    sed -i 's/interval: 28800/interval: 1800/g' osquery-configuration/Fleet/Endpoints/Windows/osquery.yaml
+    sed -i 's/interval: 0/interval: 1800/g' osquery-configuration/Fleet/Endpoints/MacOS/osquery.yaml
+    sed -i 's/interval: 0/interval: 1800/g' osquery-configuration/Fleet/Endpoints/Windows/osquery.yaml
 
     # Don't log osquery INFO messages
     # Fix snapshot event formatting
-    fleetctl get options >/tmp/options.yaml
-    /usr/bin/yq w -i /tmp/options.yaml 'spec.config.options.enroll_secret' 'enrollmentsecret'
-    /usr/bin/yq w -i /tmp/options.yaml 'spec.config.options.logger_snapshot_event_type' 'true'
-    fleetctl apply -f /tmp/options.yaml
+    fleetctl get config >/tmp/config.yaml
+    /usr/bin/yq eval -i '.spec.agent_options.config.options.enroll_secret = "enrollmentsecretenrollmentsecret"' /tmp/config.yaml
+    /usr/bin/yq eval -i '.spec.agent_options.config.options.logger_snapshot_event_type = true' /tmp/config.yaml
+    fleetctl apply -f /tmp/config.yaml
 
     # Use fleetctl to import YAML files
     fleetctl apply -f osquery-configuration/Fleet/Endpoints/MacOS/osquery.yaml
@@ -354,8 +366,6 @@ install_fleet_import_osquery_config() {
     # Files must exist before splunk will add a monitor
     touch /var/log/fleet/osquery_result
     touch /var/log/fleet/osquery_status
-    /opt/splunk/bin/splunk add monitor "/var/log/fleet/osquery_result" -index osquery -sourcetype 'osquery:json' -auth 'admin:changeme' --accept-license --answer-yes --no-prompt
-    /opt/splunk/bin/splunk add monitor "/var/log/fleet/osquery_status" -index osquery-status -sourcetype 'osquery:status' -auth 'admin:changeme' --accept-license --answer-yes --no-prompt
   fi
 }
 
@@ -363,10 +373,10 @@ install_zeek() {
   echo "[$(date +%H:%M:%S)]: Installing Zeek..."
   # Environment variables
   NODECFG=/opt/zeek/etc/node.cfg
-  if ! grep 'zeek' /etc/apt/sources.list.d/security:zeek.list > /dev/null; then
+  if ! grep 'zeek' /etc/apt/sources.list.d/security:zeek.list &> /dev/null; then
     sh -c "echo 'deb http://download.opensuse.org/repositories/security:/zeek/xUbuntu_20.04/ /' > /etc/apt/sources.list.d/security:zeek.list"
   fi
-  wget -nv https://download.opensuse.org/repositories/security:zeek/xUbuntu_20.04/Release.key -O /tmp/Release.key
+  wget -nv https://download.opensuse.org/repositories/security:zeek/xUbuntu_20.04/Release.key -O /tmp/Release.key 
   apt-key add - </tmp/Release.key &>/dev/null
   # Update APT repositories
   apt-get -qq -ym update
@@ -432,18 +442,6 @@ install_zeek() {
   systemctl enable zeek
   systemctl start zeek
 
-  # Configure the Splunk inputs
-  mkdir -p /opt/splunk/etc/apps/Splunk_TA_bro/local && touch /opt/splunk/etc/apps/Splunk_TA_bro/local/inputs.conf
-  crudini --set /opt/splunk/etc/apps/Splunk_TA_bro/local/inputs.conf monitor:///opt/zeek/spool/manager index zeek
-  crudini --set /opt/splunk/etc/apps/Splunk_TA_bro/local/inputs.conf monitor:///opt/zeek/spool/manager sourcetype zeek:json
-  crudini --set /opt/splunk/etc/apps/Splunk_TA_bro/local/inputs.conf monitor:///opt/zeek/spool/manager whitelist '.*\.log$'
-  crudini --set /opt/splunk/etc/apps/Splunk_TA_bro/local/inputs.conf monitor:///opt/zeek/spool/manager blacklist '.*(communication|stderr)\.log$'
-  crudini --set /opt/splunk/etc/apps/Splunk_TA_bro/local/inputs.conf monitor:///opt/zeek/spool/manager disabled 0
-
-  # Ensure permissions are correct and restart splunk
-  chown -R splunk:splunk /opt/splunk/etc/apps/Splunk_TA_bro
-  /opt/splunk/bin/splunk restart
-
   # Verify that Zeek is running
   if ! pgrep -f zeek >/dev/null; then
     echo "Zeek attempted to start but is not running. Exiting"
@@ -454,10 +452,10 @@ install_zeek() {
 install_velociraptor() {
   echo "[$(date +%H:%M:%S)]: Installing Velociraptor..."
   if [ ! -d "/opt/velociraptor" ]; then
-    mkdir /opt/velociraptor
+    mkdir /opt/velociraptor || echo "Dir already exists"
   fi
   echo "[$(date +%H:%M:%S)]: Attempting to determine the URL for the latest release of Velociraptor"
-  LATEST_VELOCIRAPTOR_LINUX_URL=$(curl -sL https://github.com/Velocidex/velociraptor/releases/latest | grep linux-amd64 | grep href | head -1 | cut -d '"' -f 2 | sed 's#^#https://github.com#g')
+  LATEST_VELOCIRAPTOR_LINUX_URL=$(curl -sL https://github.com/Velocidex/velociraptor/releases/ | grep linux-amd64 | grep href | head -1 | cut -d '"' -f 2 | sed 's#^#https://github.com#g')
   echo "[$(date +%H:%M:%S)]: The URL for the latest release was extracted as $LATEST_VELOCIRAPTOR_LINUX_URL"
   echo "[$(date +%H:%M:%S)]: Attempting to download..."
   wget -P /opt/velociraptor --progress=bar:force "$LATEST_VELOCIRAPTOR_LINUX_URL"
@@ -505,14 +503,6 @@ install_suricata() {
   echo re:protocol-command-decode >>/etc/suricata/disable.conf
   # enable et-open and attackdetection sources
   suricata-update enable-source et/open
-  suricata-update enable-source ptresearch/attackdetection
-
-  # Configure the Splunk inputs
-  crudini --set /opt/splunk/etc/apps/search/local/inputs.conf monitor:///var/log/suricata index suricata
-  crudini --set /opt/splunk/etc/apps/search/local/inputs.conf monitor:///var/log/suricata sourcetype suricata:json
-  crudini --set /opt/splunk/etc/apps/search/local/inputs.conf monitor:///var/log/suricata whitelist 'eve.json'
-  crudini --set /opt/splunk/etc/apps/search/local/inputs.conf monitor:///var/log/suricata disabled 0
-  crudini --set /opt/splunk/etc/apps/search/local/props.conf suricata:json TRUNCATE 0
 
   # Update suricata and restart
   suricata-update
@@ -596,14 +586,12 @@ install_guacamole() {
 }
 
 postinstall_tasks() {
-  # Include Splunk and Zeek in the PATH
-  echo export PATH="$PATH:/opt/splunk/bin:/opt/zeek/bin" >>~/.bashrc
-  echo "export SPLUNK_HOME=/opt/splunk" >>~/.bashrc
   # Ping DetectionLab server for usage statistics
   curl -s -A "DetectionLab-logger" "https:/ping.detectionlab.network/logger" || echo "Unable to connect to ping.detectionlab.network"
 }
 
 configure_splunk_inputs() {
+  echo "[$(date +%H:%M:%S)]: Configuring Splunk Inputs..."
   # Suricata
   crudini --set /opt/splunk/etc/apps/search/local/inputs.conf monitor:///var/log/suricata index suricata
   crudini --set /opt/splunk/etc/apps/search/local/inputs.conf monitor:///var/log/suricata sourcetype suricata:json
@@ -640,12 +628,17 @@ main() {
   install_suricata
   install_zeek
   install_guacamole
+  configure_splunk_inputs
   postinstall_tasks
 }
 
 splunk_only() {
   install_splunk
   configure_splunk_inputs
+}
+
+velociraptor_only() {
+  install_velociraptor
 }
 
 # Allow custom modes via CLI args

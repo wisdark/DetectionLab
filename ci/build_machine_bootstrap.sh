@@ -17,10 +17,12 @@ sysctl -p /etc/sysctl.conf > /dev/null
 echo "deb [arch=amd64] https://download.virtualbox.org/virtualbox/debian $(lsb_release -sc) contrib" | sudo tee /etc/apt/sources.list.d/virtualbox.list
 wget -q https://www.virtualbox.org/download/oracle_vbox_2016.asc -O- | sudo apt-key add -
 wget -q https://www.virtualbox.org/download/oracle_vbox.asc -O- | sudo apt-key add -
+wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor | sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
 echo "[$(date +%H:%M:%S)]: Running apt-get update..."
 apt-get -qq update
 echo "[$(date +%H:%M:%S)]: Running apt-get install..."
-apt-get -qq install -y linux-headers-"$(uname -r)" virtualbox-6.1 build-essential unzip git ufw apache2
+apt-get -qq install -y linux-headers-"$(uname -r)" virtualbox-6.1 build-essential unzip git ufw apache2 vagrant
 
 echo "building" > /var/www/html/index.html
 
@@ -30,12 +32,6 @@ ufw allow http
 ufw default allow outgoing
 ufw --force enable
 
-# Install Vagrant
-echo "[$(date +%H:%M:%S)]: Installing Vagrant..."
-mkdir /opt/vagrant
-cd /opt/vagrant || exit 1
-wget --progress=bar:force https://releases.hashicorp.com/vagrant/2.2.18/vagrant_2.2.18_x86_64.deb
-dpkg -i vagrant_2.2.18_x86_64.deb
 echo "[$(date +%H:%M:%S)]: Installing vagrant-reload plugin..."
 vagrant plugin install vagrant-reload
 
@@ -120,7 +116,7 @@ main() {
   # Build and Test Vagrant hosts
   cd Vagrant || exit 1
   build_vagrant_hosts
-  /bin/bash "$DL_DIR/Vagrant/post_build_checks.sh" > $DL_DIR/Vagrant/post_build.log
+  /bin/bash "$DL_DIR/Vagrant/post_build_checks.sh" &> $DL_DIR/Vagrant/post_build.log
   exit 0
 }
 main
