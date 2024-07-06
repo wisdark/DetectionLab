@@ -94,15 +94,9 @@ fix_eth1_static_ip() {
       return 0
     fi
   fi
-  # There's a fun issue where dhclient keeps messing with eth1 despite the fact
-  # that eth1 has a static IP set. We workaround this by setting a static DHCP lease.
-  if ! grep 'interface "eth1"' /etc/dhcp/dhclient.conf; then
-    echo -e 'interface "eth1" {
-      send host-name = gethostname();
-      send dhcp-requested-address 192.168.56.105;
-    }' >>/etc/dhcp/dhclient.conf
-    netplan apply
-  fi
+  # TODO: try to set correctly directly through vagrant net config
+  netplan set --origin-hint 90-disable-eth1-dhcp ethernets.eth1.dhcp4=false
+  netplan apply
 
   # Fix eth1 if the IP isn't set correctly
   ETH1_IP=$(ip -4 addr show eth1 | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
@@ -111,14 +105,25 @@ fix_eth1_static_ip() {
     ip link set dev eth1 down
     ip addr flush dev eth1
     ip link set dev eth1 up
-    ETH1_IP=$(ip -4 addr show eth1 | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
-    if [ "$ETH1_IP" == "192.168.56.105" ]; then
-      echo "[$(date +%H:%M:%S)]: The static IP has been fixed and set to 192.168.56.105"
-    else
-      echo "[$(date +%H:%M:%S)]: Failed to fix the broken static IP for eth1. Exiting because this will cause problems with other VMs."
-      echo "[$(date +%H:%M:%S)]: eth1's current IP address is $ETH1_IP"
-      exit 1
-    fi
+    counter=0
+    while :; do
+      ETH1_IP=$(ip -4 addr show eth1 | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
+      if [ "$ETH1_IP" == "192.168.56.105" ]; then
+        echo "[$(date +%H:%M:%S)]: The static IP has been fixed and set to 192.168.56.105"
+        break
+      else
+        if [ $counter -le 20 ]; then
+          let counter=counter+1
+          echo "[$(date +%H:%M:%S)]: Waiting for IP $counter/20 seconds"
+          sleep 1
+          continue
+        else
+          echo "[$(date +%H:%M:%S)]: Failed to fix the broken static IP for eth1. Exiting because this will cause problems with other VMs."
+          echo "[$(date +%H:%M:%S)]: eth1's current IP address is $ETH1_IP"
+          exit 1
+        fi
+      fi
+    done
   fi
 
   # Make sure we do have a DNS resolution
@@ -381,7 +386,7 @@ install_zeek() {
   # Update APT repositories
   apt-get -qq -ym update
   # Install tools to build and configure Zeek
-  apt-get -qq -ym install zeek crudini
+  apt-get -qq -ym install zeek-lts crudini
   export PATH=$PATH:/opt/zeek/bin
   pip3 install zkg==2.1.1
   zkg refresh
@@ -472,6 +477,8 @@ install_velociraptor() {
   cp /vagrant/resources/velociraptor/server.config.yaml /opt/velociraptor
   echo "[$(date +%H:%M:%S)]: Creating Velociraptor dpkg..."
   ./velociraptor --config /opt/velociraptor/server.config.yaml debian server
+  echo "[$(date +%H:%M:%S)]: Cleanup velociraptor package building leftovers..."
+  rm -rf /opt/velociraptor/logs
   echo "[$(date +%H:%M:%S)]: Installing the dpkg..."
   if dpkg -i velociraptor_*_server.deb >/dev/null; then
     echo "[$(date +%H:%M:%S)]: Installation complete!"
